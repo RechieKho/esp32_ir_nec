@@ -1,6 +1,7 @@
 | Supported Targets | ESP32 | ESP32-C3 | ESP32-C5 | ESP32-C6 | ESP32-H2 | ESP32-P4 | ESP32-S2 | ESP32-S3 |
 | ----------------- | ----- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
-# IR NEC Encoding and Decoding Example
+
+# IR NEC Transceiver
 
 (See the README.md file in the upper level 'examples' directory for more information about examples.)
 
@@ -10,10 +11,10 @@
 
 ### Hardware Required
 
-* A development board with supported SoC mentioned in the above `Supported Targets` table
-* An USB cable for power supply and programming
-* A 5mm infrared LED (e.g. IR333C) used to transmit encoded IR signals
-* An infrared receiver module (e.g. IRM-3638T), which integrates a demodulator and AGC circuit
+- A development board with supported SoC mentioned in the above `Supported Targets` table
+- An USB cable for power supply and programming
+- A 5mm infrared LED (e.g. IR333C) used to transmit encoded IR signals
+- An infrared receiver module (e.g. IRM-3638T), which integrates a demodulator and AGC circuit
 
 ### Hardware Connection
 
@@ -28,13 +29,13 @@
 +--------------------------+       +----------------------+              +---------------------------+
 ```
 
-The TX and RX GPIO number used by this example can be changed in [the source file](main/ir_nec_transceiver_main.c) via `EXAMPLE_IR_TX_GPIO_NUM` and `EXAMPLE_IR_RX_GPIO_NUM`.
+The TX and RX GPIO number used by this example can be changed in [the source file](main/main.c) via `IR_TX_GPIO_NUM` and `IR_RX_GPIO_NUM`.
 
 ### Build and Flash
 
 Run `idf.py -p PORT flash monitor` to build, flash and monitor the project.
 
-(To exit the serial monitor, type ``Ctrl-]``.)
+(To exit the serial monitor, type `Ctrl-]`.)
 
 See the [Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/latest/get-started/index.html) for full steps to configure and use ESP-IDF to build projects.
 
@@ -104,7 +105,3 @@ NEC frame start---
 ```
 
 In the example's main loop, the RX channel waits for any NEC frames, if nothing received within 1 second, the TX channel will send out a predefined NEC frame (address=0x0440, command=0x3003).
-
-## Troubleshooting
-
-For any technical queries, please open an [issue] (https://github.com/espressif/esp-idf/issues) on GitHub. We will get back to you soon.
