@@ -10,17 +10,25 @@
 #include "esp_log.h"
 #include "driver/rmt_tx.h"
 #include "driver/rmt_rx.h"
+#include "driver/gpio.h"
 #include "ir_nec.h"
 
-#define IR_TX_GPIO_NUM 18
-#define IR_RX_GPIO_NUM 19
+#define IR_TX_GPIO_NUM (18)
+#define IR_RX_GPIO_NUM (19)
+#define BUTTON_INPUT_GPIO_NUM (GPIO_NUM_10)
 
 static const char *TAG = "main";
 
 static uint16_t s_last_nec_code_address = 0x0000;
 static uint16_t s_last_nec_code_command = 0x0000;
 
-static void process_input(rmt_symbol_word_t *rmt_nec_symbols, size_t symbol_num)
+typedef struct gpio_queue_pair_t
+{
+    gpio_num_t gpio_num;
+    QueueHandle_t queue;
+} gpio_queue_pair_t;
+
+static void process_ir(rmt_symbol_word_t *rmt_nec_symbols, size_t symbol_num)
 {
     printf("NEC frame start---\r\n");
     for (size_t i = 0; i < symbol_num; i++)
@@ -50,6 +58,14 @@ static void process_input(rmt_symbol_word_t *rmt_nec_symbols, size_t symbol_num)
     }
 }
 
+static void process_gpio_input(gpio_num_t gpio_num)
+{
+    if (gpio_num == BUTTON_INPUT_GPIO_NUM)
+    {
+        // TODO: Do something.
+    }
+}
+
 static bool rmt_rx_done_callback(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *edata, void *user_data)
 {
     BaseType_t high_task_wakeup = pdFALSE;
@@ -59,10 +75,33 @@ static bool rmt_rx_done_callback(rmt_channel_handle_t channel, const rmt_rx_done
     return high_task_wakeup == pdTRUE;
 }
 
+static void gpio_isr_handler(void *arg)
+{
+    BaseType_t high_task_wakeup = pdFALSE;
+    const gpio_queue_pair_t *pair = (gpio_queue_pair_t *)arg;
+    xQueueSendFromISR(pair->queue, &pair->gpio_num, &high_task_wakeup);
+}
+
 void app_main(void)
 {
-    ESP_LOGI(TAG, "create RMT RX channel");
+    QueueHandle_t input_queue = xQueueCreate(1, sizeof(gpio_num_t));
+    assert(input_queue);
 
+    gpio_config_t button_config = {};
+    button_config.pin_bit_mask = (1ULL << BUTTON_INPUT_GPIO_NUM);
+    button_config.mode = GPIO_MODE_INPUT;
+    button_config.pull_up_en = GPIO_PULLUP_ENABLE;
+    button_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    button_config.intr_type = GPIO_INTR_POSEDGE;
+    gpio_config(&button_config);
+
+    gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1);
+    const gpio_queue_pair_t button_queue_pair = {
+        .gpio_num = BUTTON_INPUT_GPIO_NUM,
+        .queue = input_queue};
+    gpio_isr_handler_add((1ULL << BUTTON_INPUT_GPIO_NUM), gpio_isr_handler, (void *)(&button_queue_pair));
+
+    ESP_LOGI(TAG, "create RMT RX channel");
     rmt_rx_channel_config_t rx_channel_cfg = {
         .clk_src = RMT_CLK_SRC_DEFAULT,
         .resolution_hz = IR_NEC_RESOLUTION_HZ,
@@ -112,6 +151,7 @@ void app_main(void)
     // save the received RMT symbols
     rmt_symbol_word_t raw_symbols[IR_NEC_RMT_SYMBOL_COUNT];
     rmt_rx_done_event_data_t rx_data;
+    gpio_num_t input_gpio_num;
 
     // ready to receive
     ESP_ERROR_CHECK(rmt_receive(rx_channel, raw_symbols, sizeof(raw_symbols), &gc_ir_nec_receive_config));
@@ -121,10 +161,12 @@ void app_main(void)
         if (xQueueReceive(receive_queue, &rx_data, pdMS_TO_TICKS(1000)) == pdPASS)
         {
             // parse the receive symbols and print the result
-            process_input(rx_data.received_symbols, rx_data.num_symbols);
+            process_ir(rx_data.received_symbols, rx_data.num_symbols);
             // start receive again
             ESP_ERROR_CHECK(rmt_receive(rx_channel, raw_symbols, sizeof(raw_symbols), &gc_ir_nec_receive_config));
         }
+        else if (xQueueReceive(input_queue, &input_gpio_num, pdMS_TO_TICKS(1000)) == pdPASS)
+            process_gpio_input(input_gpio_num);
         else
         {
             // Transmit predefined IR NEC packets
