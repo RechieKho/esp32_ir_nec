@@ -13,42 +13,87 @@
 #include "driver/gpio.h"
 #include "ir_nec.h"
 
+#define ARRAY_LENGTH(arr) (sizeof(arr) / sizeof(arr[0]))
+
 #define DEFAULT_TASK_STACK_DEPTH (2048)
 #define DEFAULT_PRIORITY (tskIDLE_PRIORITY + 10)
+#define DEFAULT_TRANSMISSION_QUEUE_DEPTH (4)
 
-#define IR_TX_GPIO_NUM (18)
 #define IR_RX_GPIO_NUM (19)
 #define BUTTON_INPUT_GPIO_NUM (GPIO_NUM_10)
 
+typedef struct transmitter_config_t
+{
+    gpio_num_t channel_gpio_num;
+    gpio_num_t hint_gpio_num;
+} transmitter_config_t;
+
+typedef struct transmitter_t
+{
+    rmt_channel_handle_t channel;
+    gpio_num_t hint_gpio_num;
+} transmitter_t;
+
 static const char *TAG = "main";
+static const transmitter_config_t TRANSMITTER_CONFIGS[] = {
+    {.channel_gpio_num = 18,
+     .hint_gpio_num = 10},
+    {.channel_gpio_num = 20,
+     .hint_gpio_num = 11},
+    {.channel_gpio_num = 21,
+     .hint_gpio_num = 12},
+    {.channel_gpio_num = 22,
+     .hint_gpio_num = 13},
+    {.channel_gpio_num = 23,
+     .hint_gpio_num = 14},
+    {.channel_gpio_num = 24,
+     .hint_gpio_num = 15},
+    {.channel_gpio_num = 25,
+     .hint_gpio_num = 16}};
 
-static rmt_channel_handle_t tx_channel = NULL;
-static rmt_channel_handle_t rx_channel = NULL;
-static rmt_encoder_handle_t nec_encoder = NULL;
-static uint16_t s_last_nec_code_address = 0x0000;
-static uint16_t s_last_nec_code_command = 0x0000;
-static rmt_symbol_word_t raw_symbols[IR_NEC_RMT_SYMBOL_COUNT];
+static transmitter_t s_transmitters[ARRAY_LENGTH(TRANSMITTER_CONFIGS)];
+static rmt_channel_handle_t s_rx_channel = NULL;
+static rmt_encoder_handle_t s_nec_encoder = NULL;
+static uint16_t s_last_nec_valid_code_address = 0x0000;
+static uint16_t s_last_nec_valid_code_command = 0x0000;
+static rmt_symbol_word_t s_raw_symbols[IR_NEC_RMT_SYMBOL_COUNT];
+static size_t s_transmitter_selector = ARRAY_LENGTH(TRANSMITTER_CONFIGS); //<* When it is between `0` to `(ARRAY_LENGTH(TRANSMITTER_CONFIGS) - 1)`, it is used as an index with the `s_transmitters[s_transmitter_selector]` be used. When it is `ARRAY_LENGTH(TRANSMITTER_CONFIGS)`, all s_transmitters are used.
 
-static QueueHandle_t input_queue = NULL;
-static QueueHandle_t receive_queue = NULL;
+static QueueHandle_t s_input_queue = NULL;
+static QueueHandle_t s_receive_queue = NULL;
+
+static void transmit_nec(ir_nec_scan_code_t scan_code)
+{
+    rmt_transmit_config_t transmit_config = {
+        .loop_count = 0,
+    };
+    for (size_t i = 0; i < ARRAY_LENGTH(TRANSMITTER_CONFIGS); i++)
+        if (s_transmitter_selector == ARRAY_LENGTH(TRANSMITTER_CONFIGS))
+            ESP_ERROR_CHECK(rmt_transmit(s_transmitters[i].channel, s_nec_encoder, &scan_code, sizeof(scan_code), &transmit_config));
+        else if (s_transmitter_selector == i)
+            ESP_ERROR_CHECK(rmt_transmit(s_transmitters[i].channel, s_nec_encoder, &scan_code, sizeof(scan_code), &transmit_config));
+}
+
+static void update_hints()
+{
+    for (size_t i = 0; i < ARRAY_LENGTH(TRANSMITTER_CONFIGS); i++)
+        gpio_set_level(s_transmitters[i].hint_gpio_num, (s_transmitter_selector == ARRAY_LENGTH(TRANSMITTER_CONFIGS) ? true : s_transmitter_selector == i));
+}
 
 static void on_button_pressed()
 {
-    // TODO: Do something.
+    s_transmitter_selector = (s_transmitter_selector + 1) % (ARRAY_LENGTH(TRANSMITTER_CONFIGS) + 1);
+    update_hints();
 }
 
 static void on_nec_code_received()
 {
-    // TODO: Do something.
-    printf("Address=%04X, Command=%04X, repeat\r\n\r\n", s_last_nec_code_address, s_last_nec_code_command);
-    rmt_transmit_config_t transmit_config = {
-        .loop_count = 0, // no loop
-    };
+    ESP_LOGI(TAG, "NEC Code Received: address=%04X, command=%04X.", s_last_nec_valid_code_address, s_last_nec_valid_code_command);
     const ir_nec_scan_code_t scan_code = {
-        .address = s_last_nec_code_address,
-        .command = s_last_nec_code_command,
+        .address = s_last_nec_valid_code_address,
+        .command = s_last_nec_valid_code_command,
     };
-    ESP_ERROR_CHECK(rmt_transmit(tx_channel, nec_encoder, &scan_code, sizeof(scan_code), &transmit_config));
+    transmit_nec(scan_code);
 }
 
 static void on_unknown_nec_code_received()
@@ -61,7 +106,7 @@ static void button_task(void *arg)
     gpio_num_t input_gpio_num;
     while (true)
     {
-        if (xQueueReceive(input_queue, &input_gpio_num, pdMS_TO_TICKS(1000)) != pdPASS)
+        if (xQueueReceive(s_input_queue, &input_gpio_num, pdMS_TO_TICKS(1000)) != pdPASS)
             continue;
         if (input_gpio_num != BUTTON_INPUT_GPIO_NUM)
             continue;
@@ -72,18 +117,18 @@ static void button_task(void *arg)
 
 static void ir_receiver_task(void *arg)
 {
-    ESP_ERROR_CHECK(rmt_receive(rx_channel, raw_symbols, sizeof(raw_symbols), &gc_ir_nec_receive_config));
+    ESP_ERROR_CHECK(rmt_receive(s_rx_channel, s_raw_symbols, sizeof(s_raw_symbols), &gc_ir_nec_receive_config));
     rmt_rx_done_event_data_t done_event_data;
     while (true)
     {
-        if (xQueueReceive(receive_queue, &done_event_data, pdMS_TO_TICKS(1000)) != pdPASS)
+        if (xQueueReceive(s_receive_queue, &done_event_data, pdMS_TO_TICKS(1000)) != pdPASS)
             continue;
 
         // decode RMT symbols
         switch (done_event_data.num_symbols)
         {
         case 34: // NEC normal frame
-            if (ir_nec_parse_frame(done_event_data.received_symbols, &s_last_nec_code_address, &s_last_nec_code_command) == ESP_OK)
+            if (ir_nec_parse_frame(done_event_data.received_symbols, &s_last_nec_valid_code_address, &s_last_nec_valid_code_command) == ESP_OK)
                 on_nec_code_received();
             break;
         case 2: // NEC repeat frame
@@ -94,7 +139,7 @@ static void ir_receiver_task(void *arg)
             on_unknown_nec_code_received();
             break;
         }
-        ESP_ERROR_CHECK(rmt_receive(rx_channel, raw_symbols, sizeof(raw_symbols), &gc_ir_nec_receive_config));
+        ESP_ERROR_CHECK(rmt_receive(s_rx_channel, s_raw_symbols, sizeof(s_raw_symbols), &gc_ir_nec_receive_config));
     }
 }
 
@@ -102,7 +147,7 @@ static bool rmt_rx_done_callback(rmt_channel_handle_t channel, const rmt_rx_done
 {
     BaseType_t high_task_wakeup = pdFALSE;
     // send the received RMT symbols to the parser task
-    xQueueSendFromISR(receive_queue, done_event_data, &high_task_wakeup);
+    xQueueSendFromISR(s_receive_queue, done_event_data, &high_task_wakeup);
     return high_task_wakeup == pdTRUE;
 }
 
@@ -110,23 +155,24 @@ static void gpio_isr_handler(void *arg)
 {
     BaseType_t high_task_wakeup = pdFALSE;
     gpio_num_t gpio_num = (gpio_num_t)arg;
-    xQueueSendFromISR(input_queue, &gpio_num, &high_task_wakeup);
+    xQueueSendFromISR(s_input_queue, &gpio_num, &high_task_wakeup);
 }
 
 void app_main(void)
 {
-    input_queue = xQueueCreate(1, sizeof(gpio_num_t));
-    assert(input_queue);
-    receive_queue = xQueueCreate(1, sizeof(rmt_rx_done_event_data_t));
-    assert(receive_queue);
+    s_input_queue = xQueueCreate(1, sizeof(gpio_num_t));
+    assert(s_input_queue);
+    s_receive_queue = xQueueCreate(1, sizeof(rmt_rx_done_event_data_t));
+    assert(s_receive_queue);
 
     ESP_LOGI(TAG, "Setup Button.");
-    gpio_config_t button_config = {};
-    button_config.pin_bit_mask = (1ULL << BUTTON_INPUT_GPIO_NUM);
-    button_config.mode = GPIO_MODE_INPUT;
-    button_config.pull_up_en = GPIO_PULLUP_ENABLE;
-    button_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    button_config.intr_type = GPIO_INTR_POSEDGE;
+    gpio_config_t button_config = {
+        .intr_type = GPIO_INTR_POSEDGE,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pin_bit_mask = 1ULL << BUTTON_INPUT_GPIO_NUM,
+    };
     gpio_config(&button_config);
 
     ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1));
@@ -139,37 +185,50 @@ void app_main(void)
         .mem_block_symbols = IR_NEC_RMT_SYMBOL_COUNT,
         .gpio_num = IR_RX_GPIO_NUM,
     };
-    ESP_ERROR_CHECK(rmt_new_rx_channel(&rx_channel_cfg, &rx_channel));
+    ESP_ERROR_CHECK(rmt_new_rx_channel(&rx_channel_cfg, &s_rx_channel));
     rmt_rx_event_callbacks_t cbs = {
         .on_recv_done = rmt_rx_done_callback,
     };
-    ESP_ERROR_CHECK(rmt_rx_register_event_callbacks(rx_channel, &cbs, NULL));
+    ESP_ERROR_CHECK(rmt_rx_register_event_callbacks(s_rx_channel, &cbs, NULL));
 
-    ESP_LOGI(TAG, "Setup RMT TX channel.");
-    rmt_tx_channel_config_t tx_channel_cfg = {
+    ESP_LOGI(TAG, "Setup s_transmitters.");
+    rmt_tx_channel_config_t channel_config = {
         .clk_src = RMT_CLK_SRC_DEFAULT,
         .resolution_hz = IR_NEC_RESOLUTION_HZ,
         .mem_block_symbols = IR_NEC_RMT_SYMBOL_COUNT,
-        .trans_queue_depth = 4, // number of transactions that allowed to pending in the background, this example won't queue multiple transactions, so queue depth > 1 is sufficient
-        .gpio_num = IR_TX_GPIO_NUM,
+        .trans_queue_depth = DEFAULT_TRANSMISSION_QUEUE_DEPTH, // number of transactions that allowed to pending in the background, this example won't queue multiple transactions, so queue depth > 1 is sufficient
     };
-    ESP_ERROR_CHECK(rmt_new_tx_channel(&tx_channel_cfg, &tx_channel));
-    ESP_ERROR_CHECK(rmt_apply_carrier(tx_channel, &gc_ir_nec_carrier_cfg));
+    gpio_config_t hint_gpio_config = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE};
+    for (size_t i = 0; i < ARRAY_LENGTH(TRANSMITTER_CONFIGS); i++)
+    {
+        channel_config.gpio_num = TRANSMITTER_CONFIGS[i].channel_gpio_num;
+        ESP_ERROR_CHECK(rmt_new_tx_channel(&channel_config, &s_transmitters[i].channel));
+        ESP_ERROR_CHECK(rmt_apply_carrier(s_transmitters[i].channel, &gc_ir_nec_carrier_cfg));
+
+        hint_gpio_config.pin_bit_mask = 1ULL << TRANSMITTER_CONFIGS[i].hint_gpio_num;
+        ESP_ERROR_CHECK(gpio_config(&hint_gpio_config));
+        s_transmitters[i].hint_gpio_num = TRANSMITTER_CONFIGS[i].hint_gpio_num;
+    }
 
     ESP_LOGI(TAG, "Setup IR NEC encoder.");
     ir_nec_encoder_config_t nec_encoder_cfg = {
         .resolution = IR_NEC_RESOLUTION_HZ,
     };
-    ESP_ERROR_CHECK(ir_nec_new_rmt_encoder(&nec_encoder_cfg, &nec_encoder));
+    ESP_ERROR_CHECK(ir_nec_new_rmt_encoder(&nec_encoder_cfg, &s_nec_encoder));
 
     ESP_LOGI(TAG, "Enable RMT TX and RX channels.");
-    ESP_ERROR_CHECK(rmt_enable(tx_channel));
-    ESP_ERROR_CHECK(rmt_enable(rx_channel));
+    for (size_t i = 0; i < ARRAY_LENGTH(TRANSMITTER_CONFIGS); i++)
+        ESP_ERROR_CHECK(rmt_enable(s_transmitters[i].channel));
+    ESP_ERROR_CHECK(rmt_enable(s_rx_channel));
+    update_hints();
 
     xTaskCreate(button_task, "button_task", DEFAULT_TASK_STACK_DEPTH, NULL, DEFAULT_PRIORITY, NULL);
     xTaskCreate(ir_receiver_task, "ir_receiver_task", DEFAULT_TASK_STACK_DEPTH, NULL, DEFAULT_PRIORITY - 5, NULL);
 
-    // ready to receive
     while (1)
     {
         vTaskDelay((1000 / 60) / portTICK_PERIOD_MS);
