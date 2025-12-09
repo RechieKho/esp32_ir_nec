@@ -22,7 +22,9 @@
 
 static const char *TAG = "main";
 
+static rmt_channel_handle_t tx_channel = NULL;
 static rmt_channel_handle_t rx_channel = NULL;
+static rmt_encoder_handle_t nec_encoder = NULL;
 static uint16_t s_last_nec_code_address = 0x0000;
 static uint16_t s_last_nec_code_command = 0x0000;
 static rmt_symbol_word_t raw_symbols[IR_NEC_RMT_SYMBOL_COUNT];
@@ -39,6 +41,14 @@ static void on_nec_code_received()
 {
     // TODO: Do something.
     printf("Address=%04X, Command=%04X, repeat\r\n\r\n", s_last_nec_code_address, s_last_nec_code_command);
+    rmt_transmit_config_t transmit_config = {
+        .loop_count = 0, // no loop
+    };
+    const ir_nec_scan_code_t scan_code = {
+        .address = s_last_nec_code_address,
+        .command = s_last_nec_code_command,
+    };
+    ESP_ERROR_CHECK(rmt_transmit(tx_channel, nec_encoder, &scan_code, sizeof(scan_code), &transmit_config));
 }
 
 static void on_unknown_nec_code_received()
@@ -73,7 +83,7 @@ static void ir_receiver_task(void *arg)
         switch (done_event_data.num_symbols)
         {
         case 34: // NEC normal frame
-            if (ir_nec_parse_frame(done_event_data.received_symbols, &s_last_nec_code_address, &s_last_nec_code_command))
+            if (ir_nec_parse_frame(done_event_data.received_symbols, &s_last_nec_code_address, &s_last_nec_code_command) == ESP_OK)
                 on_nec_code_received();
             break;
         case 2: // NEC repeat frame
@@ -143,7 +153,6 @@ void app_main(void)
         .trans_queue_depth = 4, // number of transactions that allowed to pending in the background, this example won't queue multiple transactions, so queue depth > 1 is sufficient
         .gpio_num = IR_TX_GPIO_NUM,
     };
-    rmt_channel_handle_t tx_channel = NULL;
     ESP_ERROR_CHECK(rmt_new_tx_channel(&tx_channel_cfg, &tx_channel));
     ESP_ERROR_CHECK(rmt_apply_carrier(tx_channel, &gc_ir_nec_carrier_cfg));
 
@@ -151,7 +160,6 @@ void app_main(void)
     ir_nec_encoder_config_t nec_encoder_cfg = {
         .resolution = IR_NEC_RESOLUTION_HZ,
     };
-    rmt_encoder_handle_t nec_encoder = NULL;
     ESP_ERROR_CHECK(ir_nec_new_rmt_encoder(&nec_encoder_cfg, &nec_encoder));
 
     ESP_LOGI(TAG, "Enable RMT TX and RX channels.");
@@ -165,14 +173,5 @@ void app_main(void)
     while (1)
     {
         vTaskDelay((1000 / 60) / portTICK_PERIOD_MS);
-
-        // rmt_transmit_config_t transmit_config = {
-        //     .loop_count = 0, // no loop
-        // };
-        //  const ir_nec_scan_code_t scan_code = {
-        //      .address = 0x0440,
-        //      .command = 0x3003,
-        //  };
-        //  ESP_ERROR_CHECK(rmt_transmit(tx_channel, nec_encoder, &scan_code, sizeof(scan_code), &transmit_config));
     }
 }
