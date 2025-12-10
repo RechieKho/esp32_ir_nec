@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IR Controller</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 600px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #f5f5f5;
+      }
+      .container {
+        background-color: white;
+        border-radius: 8px;
+        padding: 20px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        color: #333;
+        text-align: center;
+      }
+      .form-group {
+        margin-bottom: 15px;
+      }
+      label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: bold;
+      }
+      input[type="text"] {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        box-sizing: border-box;
+      }
+      button {
+        background-color: #4caf50;
+        border: none;
+        color: white;
+        padding: 10px 15px;
+        text-align: center;
+        text-decoration: none;
+        display: inline-block;
+        font-size: 16px;
+        margin: 4px 2px;
+        cursor: pointer;
+        border-radius: 4px;
+        width: 100%;
+      }
+      button:hover {
+        background-color: #45a049;
+      }
+      .response {
+        margin-top: 15px;
+        padding: 10px;
+        background-color: #f0f0f0;
+        border-radius: 4px;
+        font-family: monospace;
+        white-space: pre-wrap;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>IR NEC Input</h1>
+
+      <form id="ir-form">
+        <div class="form-group">
+          <label for="command">Command(Hex):</label>
+          <input
+            type="text"
+            id="command"
+            name="command"
+            placeholder="e.g.: FF00"
+            required
+          />
+        </div>
+
+        <div class="form-group">
+          <label for="address">Address(Hex):</label>
+          <input
+            type="text"
+            id="address"
+            name="address"
+            placeholder="e.g.: FF00"
+            required
+          />
+        </div>
+
+        <button type="submit">Submit</button>
+      </form>
+
+      <div id="response" class="response"></div>
+    </div>
+
+    <script>
+      document
+        .getElementById("ir-form")
+        .addEventListener("submit", function (event) {
+          event.preventDefault();
+
+          const command = document.getElementById("command").value;
+          const address = document.getElementById("address").value;
+          const responseDiv = document.getElementById("response");
+
+          if (
+            !/^[0-9A-Fa-f]+$/.test(command) ||
+            !/^[0-9A-Fa-f]+$/.test(address)
+          ) {
+            responseDiv.textContent =
+              "Error: Command and address must be valid hexadecimal numbers";
+            responseDiv.style.display = "block";
+            return;
+          }
+
+          responseDiv.style.display = "block";
+          responseDiv.textContent = "Sending...";
+
+          fetch("/control", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: `command=${command}&address=${address}`,
+          })
+            .then((response) => response.text())
+            .then((data) => {
+              responseDiv.textContent = `Server response: ${data}`;
+            })
+            .catch((error) => {
+              responseDiv.textContent = `Error: ${error.message}`;
+            });
+        });
+    </script>
+  </body>
+</html>
