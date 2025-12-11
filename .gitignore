@@ -6,4 +6,4 @@ build/
 compile_commands.json
 
 sdkconfig*
-!sdkconfig.defaults
+!sdkconfig.defaults*
