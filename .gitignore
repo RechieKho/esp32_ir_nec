@@ -4,3 +4,6 @@ build/
 !.vscode/extensions.json
 
 compile_commands.json
+
+sdkconfig*
+!sdkconfig.defaults

@@ -21,6 +21,7 @@
 #include "esp_netif.h"
 #include "esp_tls.h"
 #include "esp_check.h"
+#include "lwip/ip4_addr.h"
 
 #if !CONFIG_IDF_TARGET_LINUX
 #include <esp_wifi.h>
@@ -44,6 +45,12 @@
 #define DEFAULT_TASK_STACK_DEPTH (2048)
 #define DEFAULT_PRIORITY (tskIDLE_PRIORITY + 10)
 #define DEFAULT_TRANSMISSION_QUEUE_DEPTH (4)
+
+#define NETWORK_STATIC_IP_ADDRESS "192.168.100.69"
+#define NETWORK_STATIC_GATEWAY_ADDRESS "192.168.100.1"
+#define NETWORK_STATIC_NETMASK "255.255.255.0"
+#define NETWORK_STATIC_DNS_PRIMARY "8.8.8.8"
+#define NETWORK_STATIC_DNS_SECONDARY "8.8.4.4"
 
 #define IR_RX_GPIO_NUM (19)
 #define BUTTON_INPUT_GPIO_NUM (GPIO_NUM_10)
@@ -71,19 +78,7 @@ static esp_err_t web_control_interface_control_uri_post_handler(httpd_req_t *req
 static const char *TAG = "main";
 static const transmitter_config_t TRANSMITTER_CONFIGS[] = {
     {.channel_gpio_num = 18,
-     .hint_gpio_num = 10},
-    {.channel_gpio_num = 20,
-     .hint_gpio_num = 11},
-    {.channel_gpio_num = 21,
-     .hint_gpio_num = 12},
-    {.channel_gpio_num = 22,
-     .hint_gpio_num = 13},
-    {.channel_gpio_num = 23,
-     .hint_gpio_num = 14},
-    {.channel_gpio_num = 24,
-     .hint_gpio_num = 15},
-    {.channel_gpio_num = 25,
-     .hint_gpio_num = 16}};
+     .hint_gpio_num = 10}};
 static const httpd_uri_t WEB_CONTROL_INTERFACE_ROOT_URI = {
     .uri = "/",
     .method = HTTP_GET,
@@ -394,7 +389,7 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(rmt_rx_register_event_callbacks(s_rx_channel, &cbs, NULL));
 
-    ESP_LOGI(TAG, "Setup s_transmitters.");
+    ESP_LOGI(TAG, "Setup Transmitters.");
     rmt_tx_channel_config_t channel_config = {
         .clk_src = RMT_CLK_SRC_DEFAULT,
         .resolution_hz = IR_NEC_RESOLUTION_HZ,
@@ -423,12 +418,6 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(ir_nec_new_rmt_encoder(&nec_encoder_cfg, &s_nec_encoder));
 
-    ESP_LOGI(TAG, "Enable RMT TX and RX channels.");
-    for (size_t i = 0; i < ARRAY_LENGTH(TRANSMITTER_CONFIGS); i++)
-        ESP_ERROR_CHECK(rmt_enable(s_transmitters[i].channel));
-    ESP_ERROR_CHECK(rmt_enable(s_rx_channel));
-    update_hints();
-
     ESP_LOGI(TAG, "Setup Web Server.");
     /* Register event handlers to stop the server when Wi-Fi or Ethernet is disconnected,
      * and re-start it upon connection.
@@ -448,6 +437,36 @@ void app_main(void)
      * examples/protocols/README.md for more information about this function.
      */
     ESP_ERROR_CHECK(example_connect());
+
+    esp_netif_ip_info_t ip_info;
+    ip_info.ip.addr = ipaddr_addr(NETWORK_STATIC_IP_ADDRESS);
+    ip_info.gw.addr = ipaddr_addr(NETWORK_STATIC_GATEWAY_ADDRESS);
+    ip_info.netmask.addr = ipaddr_addr(NETWORK_STATIC_NETMASK);
+    esp_netif_dns_info_t dns_info;
+    dns_info.ip.u_addr.ip4.addr = ipaddr_addr(NETWORK_STATIC_DNS_PRIMARY);
+    dns_info.ip.type = ESP_IPADDR_TYPE_V4;
+
+    // Get the default station netif
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+
+    // Disable DHCP client
+    ESP_ERROR_CHECK(esp_netif_dhcpc_stop(sta_netif));
+
+    // Set static IP information
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(sta_netif, &ip_info));
+
+    // Set DNS information
+    ESP_ERROR_CHECK(esp_netif_set_dns_info(sta_netif, ESP_NETIF_DNS_MAIN, &dns_info));
+
+    // Optionally set secondary DNS
+    dns_info.ip.u_addr.ip4.addr = ipaddr_addr(NETWORK_STATIC_DNS_SECONDARY);
+    ESP_ERROR_CHECK(esp_netif_set_dns_info(sta_netif, ESP_NETIF_DNS_BACKUP, &dns_info));
+
+    ESP_LOGI(TAG, "Enable RMT TX and RX channels.");
+    for (size_t i = 0; i < ARRAY_LENGTH(TRANSMITTER_CONFIGS); i++)
+        ESP_ERROR_CHECK(rmt_enable(s_transmitters[i].channel));
+    ESP_ERROR_CHECK(rmt_enable(s_rx_channel));
+    update_hints();
 
     assert(xTaskCreate(gpio_input_task, "gpio_input_task", DEFAULT_TASK_STACK_DEPTH, NULL, DEFAULT_PRIORITY, NULL) == pdPASS);
     assert(xTaskCreate(ir_receiver_task, "ir_receiver_task", DEFAULT_TASK_STACK_DEPTH, NULL, DEFAULT_PRIORITY / 2, NULL) == pdPASS);
