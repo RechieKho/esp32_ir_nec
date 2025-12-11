@@ -181,7 +181,13 @@ static void on_unknown_nec_code_received()
     // Ignored.
 }
 
-static void button_task(void *arg)
+static void on_web_control_received(web_control_t web_control)
+{
+    ESP_LOGI(TAG, "Web Control Received: address=%04X, command=%04X.", web_control.scan_code.address, web_control.scan_code.command);
+    transmit_nec(web_control.scan_code);
+}
+
+static void gpio_input_task(void *arg)
 {
     gpio_num_t input_gpio_num;
     while (true)
@@ -225,6 +231,14 @@ static void ir_receiver_task(void *arg)
 
 static void web_control_task(void *arg)
 {
+    web_control_t control;
+    while (true)
+    {
+        if (xQueueReceive(s_web_control_queue, &control, pdMS_TO_TICKS(1000)) != pdPASS)
+            continue;
+
+        on_web_control_received(control);
+    }
 }
 
 static bool rmt_rx_done_callback(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *done_event_data, void *user_data)
@@ -435,7 +449,7 @@ void app_main(void)
      */
     ESP_ERROR_CHECK(example_connect());
 
-    assert(xTaskCreate(button_task, "button_task", DEFAULT_TASK_STACK_DEPTH, NULL, DEFAULT_PRIORITY, NULL) == pdPASS);
+    assert(xTaskCreate(gpio_input_task, "gpio_input_task", DEFAULT_TASK_STACK_DEPTH, NULL, DEFAULT_PRIORITY, NULL) == pdPASS);
     assert(xTaskCreate(ir_receiver_task, "ir_receiver_task", DEFAULT_TASK_STACK_DEPTH, NULL, DEFAULT_PRIORITY / 2, NULL) == pdPASS);
     assert(xTaskCreate(web_control_task, "web_control_task", DEFAULT_TASK_STACK_DEPTH * 2, NULL, DEFAULT_PRIORITY, NULL) == pdPASS);
 
